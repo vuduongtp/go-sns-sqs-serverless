@@ -1,0 +1,71 @@
+service: go-sns-sqs
+
+frameworkVersion: ">=2.63.0 <2.72.3"
+useDotenv: true
+
+plugins:
+  - serverless-hooks-plugin
+  - "@agiledigital/serverless-sns-sqs-lambda"
+
+custom:
+  mainAppName:
+    dev: go-sns-sqs
+  MyTopicArn:
+    name: !Ref MyTopic
+
+  hooks:
+    before:package:initialize:
+      - env GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o downstream/main downstream/main.go
+      - env GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o upstream/main upstream/main.go
+    after:deploy:finalize:
+      - rm -rf .serverless downstream/main
+      - rm -rf .serverless upstream/main
+
+provider:
+  lambdaHashingVersion: "20201221"
+  name: aws
+  runtime: go1.x
+  profile: my-profile
+  timeout: 30
+  memorySize: 128
+  stage: ${opt:stage, 'dev'}
+  region: ${opt:region, 'ap-southeast-1'}
+
+package:
+  individually: true
+  patterns:
+    - "!./**"
+    - .env
+
+functions:
+  Downstream:
+    name: ${self:service}-downstream-${opt:stage, 'dev'}
+    timeout: 60
+    handler: downstream/main
+    package:
+      patterns:
+        - downstream/main
+    events:
+      - snsSqs:
+          name: MyQueueEvent
+          topicArn: !Ref MyTopic
+          visibilityTimeout: 60
+          maxRetryCount: 2
+          batchSize: 1
+
+  Upstream:
+    name: ${self:service}-upstream-${opt:stage, 'dev'}
+    timeout: 300
+    handler: upstream/main
+    package:
+      patterns:
+        - upstream/main
+    environment:
+      MY_TOPIC_NAME: ${self:custom.MyTopicArn.name}
+
+resources:
+  Resources:
+    MyTopic:
+      Type: AWS::SNS::Topic
+      Properties:
+        TopicName: MyTopic
